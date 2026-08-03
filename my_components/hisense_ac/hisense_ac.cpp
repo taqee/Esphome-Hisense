@@ -78,7 +78,7 @@ void HisenseAC::setup() {
   this->current_temperature = 25;
   this->fan_mode = climate::CLIMATE_FAN_AUTO;
   this->swing_mode = climate::CLIMATE_SWING_OFF;
-  this->preset = climate::CLIMATE_PRESET_NONE; // تهيئة الـ Preset
+  this->preset = climate::CLIMATE_PRESET_NONE;
 
   this->set_supported_custom_fan_modes({"Quiet", "Med-Low", "Med-High"});
   
@@ -318,7 +318,6 @@ climate::ClimateTraits HisenseAC::traits() {
     climate::CLIMATE_SWING_BOTH
   });
 
-  // إضافة الأوضاع الإضافية كـ Presets
   traits.set_supported_presets({
     climate::CLIMATE_PRESET_NONE,
     climate::CLIMATE_PRESET_SLEEP,
@@ -326,7 +325,7 @@ climate::ClimateTraits HisenseAC::traits() {
     climate::CLIMATE_PRESET_ECO
   });
   
-  // Temperature range (from protocol documentation)
+  // Temperature range
   traits.set_visual_min_temperature(16);
   traits.set_visual_max_temperature(30);
   traits.set_visual_temperature_step(1);
@@ -381,7 +380,6 @@ void HisenseAC::control(const climate::ClimateCall &call) {
   }
   
   // Handle custom fan mode changes
-  
   StringRef new_custom_fan = call.get_custom_fan_mode();
   if (!new_custom_fan.empty()) {
     std::string fan_str(new_custom_fan.c_str());
@@ -406,28 +404,39 @@ void HisenseAC::control(const climate::ClimateCall &call) {
     }
   }
 
-  // Handle preset mode changes
+  // Handle preset mode changes - ارسال الأوامر اللي تغيرت فقط
   if (call.get_preset().has_value()) {
     climate::ClimatePreset new_preset = *call.get_preset();
     if (new_preset != this->preset) {
       this->preset = new_preset;
       this->current_preset_ = new_preset;
       
-      // Reset all modes first
-      this->sleep_enabled_ = false;
-      this->boost_mode_ = false;
-      this->eco_mode_ = false;
+      bool new_sleep = false;
+      bool new_boost = false;
+      bool new_eco = false;
       
-      // Apply the new mode
       if (new_preset == climate::CLIMATE_PRESET_SLEEP) {
-        this->sleep_enabled_ = true;
+        new_sleep = true;
       } else if (new_preset == climate::CLIMATE_PRESET_BOOST) {
-        this->boost_mode_ = true;
+        new_boost = true;
       } else if (new_preset == climate::CLIMATE_PRESET_ECO) {
-        this->eco_mode_ = true;
+        new_eco = true;
       }
       
-      changes.push_back("preset");
+      // نسجل التغييرات للي اختلف حالته بس
+      if (this->sleep_enabled_ != new_sleep) {
+        this->sleep_enabled_ = new_sleep;
+        changes.push_back("sleep");
+      }
+      if (this->boost_mode_ != new_boost) {
+        this->boost_mode_ = new_boost;
+        changes.push_back("boost");
+      }
+      if (this->eco_mode_ != new_eco) {
+        this->eco_mode_ = new_eco;
+        changes.push_back("eco");
+      }
+      
       ESP_LOGD(TAG, "Preset changed to: %d", (int)new_preset);
     }
   }
@@ -443,33 +452,35 @@ void HisenseAC::control(const climate::ClimateCall &call) {
         ESP_LOGD(TAG, "Set temperature bits: %d°C", this->target_temp_);
       } else if (property == "mode") {
         if (!this->run_status_) {
-          this->sender_->set_power(true);  // Ensure power is on if not already
-          this->run_status_ = true;  // Update run status
+          this->sender_->set_power(true);
+          this->run_status_ = true;
           ESP_LOGD(TAG, "Power turned ON for mode change"); 
         } else if (this->current_mode_ == climate::CLIMATE_MODE_OFF) {
-          this->sender_->set_power(false);  // Turn off power if mode is OFF
-          this->run_status_ = false;  // Update run status
+          this->sender_->set_power(false);
+          this->run_status_ = false;
           ESP_LOGD(TAG, "Power turned OFF for mode change");
         }
         this->sender_->set_mode(this->current_mode_);
         ESP_LOGD(TAG, "Set mode bits: %d", (int)this->current_mode_);
       } else if (property == "fan_mode") {
           if (this->current_custom_fan_mode_.empty()) {
-            // Use standard fan mode
             this->sender_->set_fan_mode(this->current_fan_mode_);
           } else {
-            // Use custom fan mode
-          this->sender_->set_fan_mode(this->current_custom_fan_mode_);
+            this->sender_->set_fan_mode(this->current_custom_fan_mode_);
           }
         ESP_LOGD(TAG, "Set fan bits: %d, custom: %s", (int)this->current_fan_mode_, this->current_custom_fan_mode_.c_str());
       } else if (property == "swing_mode") {
         this->sender_->set_swing_mode(this->current_swing_mode_);
         ESP_LOGD(TAG, "Set swing bits: %d", (int)this->current_swing_mode_);
-      } else if (property == "preset") {
+      } else if (property == "sleep") {
         this->sender_->set_sleep_mode(this->sleep_enabled_ ? this->preferred_sleep_mode_ : SleepMode::SLEEP_OFF);
+        ESP_LOGD(TAG, "Set sleep bits");
+      } else if (property == "boost") {
         this->sender_->set_boost_mode(this->boost_mode_);
+        ESP_LOGD(TAG, "Set boost bits");
+      } else if (property == "eco") {
         this->sender_->set_eco_mode(this->eco_mode_);
-        ESP_LOGD(TAG, "Set preset bits");
+        ESP_LOGD(TAG, "Set eco bits");
       }
     }
     
@@ -498,7 +509,6 @@ void HisenseAC::set_power_state(bool power_on) {
 void HisenseAC::set_display_status(bool display_on) {
   if (this->display_on_ != display_on) {
     this->display_on_ = display_on;
-    // Queue a display command if we're past init state
     if (this->init_complete_) {
       this->sender_->set_display_status(display_on);
       this->command_state_.pending = true;
@@ -545,10 +555,8 @@ void HisenseAC::set_sleep_enabled(bool enabled) {
     this->sleep_enabled_ = enabled;
     if (this->init_complete_) {
       if (enabled) {
-        // Set preferred sleep mode when enabling sleep
         this->sender_->set_sleep_mode(this->preferred_sleep_mode_);
       } else {
-        // Disable sleep mode
         this->sender_->set_sleep_mode(SleepMode::SLEEP_OFF);
       }
       ESP_LOGD(TAG, "Sleep mode set to: %s", enabled ? "ON" : "OFF");
@@ -558,20 +566,17 @@ void HisenseAC::set_sleep_enabled(bool enabled) {
 }
 
 void HisenseAC::set_preferred_sleep_mode(const std::string &status_str) {
-  // Convert string to SleepMode enum using utility function
   SleepMode status = SleepModeUtils::from_string(status_str);
   set_preferred_sleep_mode(status);
 }
 
 void HisenseAC::set_preferred_sleep_mode(SleepMode status) {
-  if (status == SleepMode::SLEEP_OFF) return;  // Ignore if sleep is off
+  if (status == SleepMode::SLEEP_OFF) return;
 
-  // Only update if the status has changed
   if (this->preferred_sleep_mode_ != status) {
     this->preferred_sleep_mode_ = status;
     if (this->init_complete_) {
       if (this->sleep_enabled_) {
-        // If sleep is enabled, set the preferred sleep mode
         this->sender_->set_sleep_mode(status);
         this->command_state_.pending = true;
       }
@@ -584,7 +589,7 @@ void HisenseAC::update_climate_state() {
   mode = current_mode_;
   fan_mode = current_fan_mode_;
   swing_mode = current_swing_mode_;
-  preset = current_preset_; // تحديث الـ Preset بواجهة Home Assistant
+  preset = current_preset_;
   target_temperature = target_temp_;
   current_temperature = current_temp_;
 
@@ -603,8 +608,6 @@ std::string HisenseAC::get_mode_string(climate::ClimateMode mode) {
     default: return "Unknown";
   }
 }
-
-// Sleep utility functions moved to SleepModeUtils in common_types.h
 
 }  // namespace hisense_ac
 }  // namespace esphome
