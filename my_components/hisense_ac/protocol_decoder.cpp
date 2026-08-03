@@ -175,6 +175,17 @@ void ProtocolDecoder::decode_status_message(const std::vector<uint8_t>& data) {
   this->decode_fan_and_swing();
   this->decode_sleep_mode();
   
+  // تحديث حالة الـ Presets عند تلقي الأوامر من الريموت الأصلي
+  if (this->parent_->boost_mode_) {
+    this->parent_->current_preset_ = climate::CLIMATE_PRESET_BOOST;
+  } else if (this->parent_->eco_mode_) {
+    this->parent_->current_preset_ = climate::CLIMATE_PRESET_ECO;
+  } else if (this->parent_->sleep_status_ != SleepMode::SLEEP_OFF) {
+    this->parent_->current_preset_ = climate::CLIMATE_PRESET_SLEEP;
+  } else {
+    this->parent_->current_preset_ = climate::CLIMATE_PRESET_NONE;
+  }
+  
   // Update ESPHome climate state
   this->parent_->update_climate_state();
 }
