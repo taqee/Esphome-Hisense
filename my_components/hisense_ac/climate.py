@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import climate, uart
-from esphome.const import CONF_ID, CONF_UPDATE_INTERVAL
+from esphome.const import CONF_ID
 from esphome import pins
 
 from . import HisenseAC, hisense_ac_ns
@@ -9,7 +9,7 @@ from . import HisenseAC, hisense_ac_ns
 CONF_FLOW_CONTROL_PIN = "flow_control_pin"
 
 CONFIG_SCHEMA = cv.All(
-    climate.climate_schema(HisenseAC).extend(
+    climate.CLIMATE_SCHEMA.extend(
         {
             cv.GenerateID(): cv.declare_id(HisenseAC),
             cv.Optional(CONF_FLOW_CONTROL_PIN): pins.gpio_output_pin_schema,
