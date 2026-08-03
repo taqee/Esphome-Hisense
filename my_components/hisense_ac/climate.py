@@ -9,7 +9,7 @@ from . import HisenseAC, hisense_ac_ns
 CONF_FLOW_CONTROL_PIN = "flow_control_pin"
 
 CONFIG_SCHEMA = cv.All(
-    climate.CLIMATE_SCHEMA.extend(
+    climate.climate_schema(HisenseAC).extend(
         {
             cv.GenerateID(): cv.declare_id(HisenseAC),
             cv.Optional(CONF_FLOW_CONTROL_PIN): pins.gpio_output_pin_schema,
