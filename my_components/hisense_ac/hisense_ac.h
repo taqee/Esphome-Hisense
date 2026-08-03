@@ -165,6 +165,7 @@ class HisenseAC : public uart::UARTDevice, public Component, public climate::Cli
   climate::ClimateMode current_mode_ = climate::CLIMATE_MODE_OFF;
   climate::ClimateFanMode current_fan_mode_ = climate::CLIMATE_FAN_AUTO;
   climate::ClimateSwingMode current_swing_mode_ = climate::CLIMATE_SWING_OFF;
+  climate::ClimatePreset current_preset_ = climate::CLIMATE_PRESET_NONE; // تم إضافة المتغير هنا
   
   // Special modes and settings
   bool boost_mode_ = false;
