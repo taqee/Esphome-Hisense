@@ -78,6 +78,7 @@ void HisenseAC::setup() {
   this->current_temperature = 25;
   this->fan_mode = climate::CLIMATE_FAN_AUTO;
   this->swing_mode = climate::CLIMATE_SWING_OFF;
+  this->preset = climate::CLIMATE_PRESET_NONE; // تهيئة الـ Preset
 
   this->set_supported_custom_fan_modes({"Quiet", "Med-Low", "Med-High"});
   
@@ -300,16 +301,14 @@ climate::ClimateTraits HisenseAC::traits() {
     climate::CLIMATE_MODE_FAN_ONLY
   });
   
-  // Supported fan modes - using custom fan modes for all AC levels
+  // Supported fan modes
   traits.set_supported_fan_modes({
-    climate::CLIMATE_FAN_OFF,      // Level 0: Fan off
-    climate::CLIMATE_FAN_AUTO,     // Level 1: Auto
-    climate::CLIMATE_FAN_LOW,      // Level 10: Low
-    climate::CLIMATE_FAN_MEDIUM,   // Level 14: Medium  
-    climate::CLIMATE_FAN_HIGH      // Level 18: High
+    climate::CLIMATE_FAN_OFF,
+    climate::CLIMATE_FAN_AUTO,
+    climate::CLIMATE_FAN_LOW,
+    climate::CLIMATE_FAN_MEDIUM,
+    climate::CLIMATE_FAN_HIGH
   });
-  
-  // Custom fan modes are set on the entity in setup(), not on traits
   
   // Supported swing modes
   traits.set_supported_swing_modes({
@@ -317,6 +316,14 @@ climate::ClimateTraits HisenseAC::traits() {
     climate::CLIMATE_SWING_VERTICAL,
     climate::CLIMATE_SWING_HORIZONTAL,
     climate::CLIMATE_SWING_BOTH
+  });
+
+  // إضافة الأوضاع الإضافية كـ Presets
+  traits.set_supported_presets({
+    climate::CLIMATE_PRESET_NONE,
+    climate::CLIMATE_PRESET_SLEEP,
+    climate::CLIMATE_PRESET_BOOST,
+    climate::CLIMATE_PRESET_ECO
   });
   
   // Temperature range (from protocol documentation)
@@ -398,6 +405,32 @@ void HisenseAC::control(const climate::ClimateCall &call) {
       ESP_LOGD(TAG, "Swing mode changed to: %d", (int)new_swing);
     }
   }
+
+  // Handle preset mode changes
+  if (call.get_preset().has_value()) {
+    climate::ClimatePreset new_preset = *call.get_preset();
+    if (new_preset != this->preset) {
+      this->preset = new_preset;
+      this->current_preset_ = new_preset;
+      
+      // Reset all modes first
+      this->sleep_enabled_ = false;
+      this->boost_mode_ = false;
+      this->eco_mode_ = false;
+      
+      // Apply the new mode
+      if (new_preset == climate::CLIMATE_PRESET_SLEEP) {
+        this->sleep_enabled_ = true;
+      } else if (new_preset == climate::CLIMATE_PRESET_BOOST) {
+        this->boost_mode_ = true;
+      } else if (new_preset == climate::CLIMATE_PRESET_ECO) {
+        this->eco_mode_ = true;
+      }
+      
+      changes.push_back("preset");
+      ESP_LOGD(TAG, "Preset changed to: %d", (int)new_preset);
+    }
+  }
   
   // Build chainable command for state machine to send
   if (!changes.empty() && this->sender_) {
@@ -432,6 +465,11 @@ void HisenseAC::control(const climate::ClimateCall &call) {
       } else if (property == "swing_mode") {
         this->sender_->set_swing_mode(this->current_swing_mode_);
         ESP_LOGD(TAG, "Set swing bits: %d", (int)this->current_swing_mode_);
+      } else if (property == "preset") {
+        this->sender_->set_sleep_mode(this->sleep_enabled_ ? this->preferred_sleep_mode_ : SleepMode::SLEEP_OFF);
+        this->sender_->set_boost_mode(this->boost_mode_);
+        this->sender_->set_eco_mode(this->eco_mode_);
+        ESP_LOGD(TAG, "Set preset bits");
       }
     }
     
@@ -546,6 +584,7 @@ void HisenseAC::update_climate_state() {
   mode = current_mode_;
   fan_mode = current_fan_mode_;
   swing_mode = current_swing_mode_;
+  preset = current_preset_; // تحديث الـ Preset بواجهة Home Assistant
   target_temperature = target_temp_;
   current_temperature = current_temp_;
 
