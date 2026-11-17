@@ -16,7 +16,6 @@ external_components:
       type: git
       url: https://github.com/taqee/Esphome-Hisense
       path: my_components
-      ref: v2-cleanup
     refresh: 0s
     components: [hisense_ac]
 
