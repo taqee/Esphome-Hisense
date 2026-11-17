@@ -18,7 +18,15 @@ class CommandSender {
   explicit CommandSender(HisenseAC *parent) : parent_(parent) { this->clear(); }
 
   // Fan values used in commands (status value / 2, auto = 0).
-  enum class CmdFan : uint8_t { AUTO = 0, QUIET = 1, LOW = 5, MED_LOW = 6, MEDIUM = 7, MED_HIGH = 8, HIGH = 9 };
+  enum class CmdFan : uint8_t {
+    CMD_AUTO = 0,
+    CMD_QUIET = 1,
+    CMD_LOW = 5,
+    CMD_MED_LOW = 6,
+    CMD_MEDIUM = 7,
+    CMD_MED_HIGH = 8,
+    CMD_HIGH = 9,
+  };
 
   void set_power(bool on);
   void set_mode(climate::ClimateMode mode);
@@ -46,18 +54,18 @@ class CommandSender {
     uint16_t offset;
     uint8_t size;
   };
-  static constexpr Field FAN = {0, 8};
-  static constexpr Field SLEEP = {8, 8};
-  static constexpr Field MODE = {16, 4};
-  static constexpr Field POWER = {20, 2};
-  static constexpr Field TEMPERATURE = {24, 8};
+  static constexpr Field F_FAN = {0, 8};
+  static constexpr Field F_SLEEP = {8, 8};
+  static constexpr Field F_MODE = {16, 4};
+  static constexpr Field F_POWER = {20, 2};
+  static constexpr Field F_TEMPERATURE = {24, 8};
   static constexpr uint16_t BEEP_BIT = 61;
-  static constexpr Field SWING_UP_DOWN = {128, 2};
-  static constexpr Field SWING_LEFT_RIGHT = {130, 2};
-  static constexpr Field ECO = {138, 2};
-  static constexpr Field BOOST = {140, 2};
-  static constexpr Field QUIET = {154, 2};
-  static constexpr Field DISPLAY = {160, 2};
+  static constexpr Field F_SWING_UP_DOWN = {128, 2};
+  static constexpr Field F_SWING_LEFT_RIGHT = {130, 2};
+  static constexpr Field F_ECO = {138, 2};
+  static constexpr Field F_BOOST = {140, 2};
+  static constexpr Field F_QUIET = {154, 2};
+  static constexpr Field F_DISPLAY = {160, 2};
 
   void set_bit_(uint16_t bit, bool value);
   void set_field_(Field f, uint32_t value);

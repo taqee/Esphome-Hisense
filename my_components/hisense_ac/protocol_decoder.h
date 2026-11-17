@@ -51,19 +51,19 @@ class ProtocolDecoder {
     uint8_t size;
   };
   // Bit offsets inside the payload (MSB first).
-  static constexpr Field FAN = {0, 8};
-  static constexpr Field SLEEP = {8, 8};
-  static constexpr Field MODE = {16, 4};
-  static constexpr Field POWER = {20, 1};
-  static constexpr Field DIRECTION = {22, 2};
-  static constexpr Field SET_TEMP = {24, 8};
-  static constexpr Field INDOOR_TEMP = {32, 8};
-  static constexpr Field SWING_UP_DOWN = {152, 1};
-  static constexpr Field SWING_LEFT_RIGHT = {153, 1};
-  static constexpr Field ECO = {157, 1};
-  static constexpr Field BOOST = {158, 1};
-  static constexpr Field QUIET = {165, 1};
-  static constexpr Field DISPLAY = {168, 1};
+  static constexpr Field F_FAN = {0, 8};
+  static constexpr Field F_SLEEP = {8, 8};
+  static constexpr Field F_MODE = {16, 4};
+  static constexpr Field F_POWER = {20, 1};
+  static constexpr Field F_DIRECTION = {22, 2};
+  static constexpr Field F_SET_TEMP = {24, 8};
+  static constexpr Field F_INDOOR_TEMP = {32, 8};
+  static constexpr Field F_SWING_UP_DOWN = {152, 1};
+  static constexpr Field F_SWING_LEFT_RIGHT = {153, 1};
+  static constexpr Field F_ECO = {157, 1};
+  static constexpr Field F_BOOST = {158, 1};
+  static constexpr Field F_QUIET = {165, 1};
+  static constexpr Field F_DISPLAY = {168, 1};
   static constexpr size_t MIN_PAYLOAD_BITS = 176;
 
   static uint32_t bits(const std::vector<uint8_t> &data, size_t payload_end, Field f);

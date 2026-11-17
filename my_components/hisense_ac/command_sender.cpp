@@ -45,7 +45,7 @@ void CommandSender::set_field_(Field f, uint32_t value) {
   this->dirty_ = true;
 }
 
-void CommandSender::set_power(bool on) { this->set_field_(POWER, on ? 1 : 0); }
+void CommandSender::set_power(bool on) { this->set_field_(F_POWER, on ? 1 : 0); }
 
 void CommandSender::set_mode(climate::ClimateMode mode) {
   uint8_t v;
@@ -69,7 +69,7 @@ void CommandSender::set_mode(climate::ClimateMode mode) {
     default:
       return;  // OFF is handled by set_power()
   }
-  this->set_field_(MODE, v);
+  this->set_field_(F_MODE, v);
 }
 
 void CommandSender::set_temperature(int temperature) {
@@ -77,23 +77,23 @@ void CommandSender::set_temperature(int temperature) {
     temperature = 16;
   if (temperature > 30)
     temperature = 30;
-  this->set_field_(TEMPERATURE, temperature);
+  this->set_field_(F_TEMPERATURE, temperature);
 }
 
-void CommandSender::set_fan(CmdFan fan) { this->set_field_(FAN, static_cast<uint8_t>(fan)); }
+void CommandSender::set_fan(CmdFan fan) { this->set_field_(F_FAN, static_cast<uint8_t>(fan)); }
 
 void CommandSender::set_swing(climate::ClimateSwingMode swing) {
   const bool vertical = swing == climate::CLIMATE_SWING_VERTICAL || swing == climate::CLIMATE_SWING_BOTH;
   const bool horizontal = swing == climate::CLIMATE_SWING_HORIZONTAL || swing == climate::CLIMATE_SWING_BOTH;
-  this->set_field_(SWING_UP_DOWN, vertical);
-  this->set_field_(SWING_LEFT_RIGHT, horizontal);
+  this->set_field_(F_SWING_UP_DOWN, vertical);
+  this->set_field_(F_SWING_LEFT_RIGHT, horizontal);
 }
 
-void CommandSender::set_sleep(SleepMode mode) { this->set_field_(SLEEP, static_cast<uint8_t>(mode) / 2); }
-void CommandSender::set_eco(bool on) { this->set_field_(ECO, on); }
-void CommandSender::set_boost(bool on) { this->set_field_(BOOST, on); }
-void CommandSender::set_quiet(bool on) { this->set_field_(QUIET, on); }
-void CommandSender::set_display(bool on) { this->set_field_(DISPLAY, on); }
+void CommandSender::set_sleep(SleepMode mode) { this->set_field_(F_SLEEP, static_cast<uint8_t>(mode) / 2); }
+void CommandSender::set_eco(bool on) { this->set_field_(F_ECO, on); }
+void CommandSender::set_boost(bool on) { this->set_field_(F_BOOST, on); }
+void CommandSender::set_quiet(bool on) { this->set_field_(F_QUIET, on); }
+void CommandSender::set_display(bool on) { this->set_field_(F_DISPLAY, on); }
 
 void CommandSender::send_command(bool beep) {
   if (beep)

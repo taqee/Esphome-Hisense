@@ -7,25 +7,25 @@ namespace hisense_ac {
 
 // Sleep values as reported in the status payload. Command value = status / 2.
 enum class SleepMode : uint8_t {
-  OFF = 0,
-  GENERAL = 2,
-  OLD = 4,
-  YOUNG = 6,
-  KIDS = 8,
+  SLEEP_OFF = 0,
+  SLEEP_GENERAL = 2,
+  SLEEP_OLD = 4,
+  SLEEP_YOUNG = 6,
+  SLEEP_KIDS = 8,
 };
 
 inline bool is_valid_sleep(uint8_t raw) { return raw <= 8 && (raw % 2) == 0; }
 
 // Fan levels as reported in the status payload.
 enum class FanLevel : uint8_t {
-  OFF = 0,
-  AUTO = 1,
-  QUIET = 2,
-  LOW = 10,
-  MED_LOW = 12,
-  MEDIUM = 14,
-  MED_HIGH = 16,
-  HIGH = 18,
+  LEVEL_OFF = 0,
+  LEVEL_AUTO = 1,
+  LEVEL_QUIET = 2,
+  LEVEL_LOW = 10,
+  LEVEL_MED_LOW = 12,
+  LEVEL_MEDIUM = 14,
+  LEVEL_MED_HIGH = 16,
+  LEVEL_HIGH = 18,
 };
 
 // Everything we read back from the AC that matters for control.
@@ -33,7 +33,7 @@ struct AcStatus {
   bool power{false};
   uint8_t mode_raw{0};     // 0 fan, 1 heat, 2 cool, 3 dry, 4..7 auto
   uint8_t fan_raw{1};      // FanLevel
-  SleepMode sleep{SleepMode::OFF};
+  SleepMode sleep{SleepMode::SLEEP_OFF};
   uint8_t direction{0};
   uint8_t target_temp{25};
   int16_t current_temp{25};

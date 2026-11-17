@@ -61,20 +61,20 @@ bool ProtocolDecoder::decode_status(const std::vector<uint8_t> &data, AcStatus &
     return false;
   }
 
-  out.fan_raw = bits(data, payload_end, FAN);
-  const uint8_t sleep_raw = bits(data, payload_end, SLEEP);
-  out.sleep = is_valid_sleep(sleep_raw) ? static_cast<SleepMode>(sleep_raw) : SleepMode::OFF;
-  out.mode_raw = bits(data, payload_end, MODE);
-  out.power = bits(data, payload_end, POWER) != 0;
-  out.direction = bits(data, payload_end, DIRECTION);
-  out.target_temp = bits(data, payload_end, SET_TEMP);
-  out.current_temp = bits(data, payload_end, INDOOR_TEMP);
-  out.swing_up_down = bits(data, payload_end, SWING_UP_DOWN) != 0;
-  out.swing_left_right = bits(data, payload_end, SWING_LEFT_RIGHT) != 0;
-  out.eco = bits(data, payload_end, ECO) != 0;
-  out.boost = bits(data, payload_end, BOOST) != 0;
-  out.quiet = bits(data, payload_end, QUIET) != 0;
-  out.display = bits(data, payload_end, DISPLAY) != 0;
+  out.fan_raw = bits(data, payload_end, F_FAN);
+  const uint8_t sleep_raw = bits(data, payload_end, F_SLEEP);
+  out.sleep = is_valid_sleep(sleep_raw) ? static_cast<SleepMode>(sleep_raw) : SleepMode::SLEEP_OFF;
+  out.mode_raw = bits(data, payload_end, F_MODE);
+  out.power = bits(data, payload_end, F_POWER) != 0;
+  out.direction = bits(data, payload_end, F_DIRECTION);
+  out.target_temp = bits(data, payload_end, F_SET_TEMP);
+  out.current_temp = bits(data, payload_end, F_INDOOR_TEMP);
+  out.swing_up_down = bits(data, payload_end, F_SWING_UP_DOWN) != 0;
+  out.swing_left_right = bits(data, payload_end, F_SWING_LEFT_RIGHT) != 0;
+  out.eco = bits(data, payload_end, F_ECO) != 0;
+  out.boost = bits(data, payload_end, F_BOOST) != 0;
+  out.quiet = bits(data, payload_end, F_QUIET) != 0;
+  out.display = bits(data, payload_end, F_DISPLAY) != 0;
 
   ESP_LOGD(TAG, "Status: power=%d mode=%u target=%u room=%d fan=%u sleep=%u eco=%d boost=%d quiet=%d", out.power,
            out.mode_raw, out.target_temp, out.current_temp, out.fan_raw, (uint8_t) out.sleep, out.eco, out.boost,

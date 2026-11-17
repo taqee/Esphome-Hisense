@@ -48,7 +48,7 @@ class HisenseAC : public uart::UARTDevice, public Component, public climate::Cli
     bool eco{false};
     bool boost{false};
     bool quiet{false};
-    SleepMode sleep{SleepMode::OFF};
+    SleepMode sleep{SleepMode::SLEEP_OFF};
   };
 
   void read_uart_();

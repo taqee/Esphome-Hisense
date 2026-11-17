@@ -279,22 +279,22 @@ void HisenseAC::apply_status_() {
 
   // Fan
   switch (static_cast<FanLevel>(s.fan_raw)) {
-    case FanLevel::QUIET:
+    case FanLevel::LEVEL_QUIET:
       changed |= this->set_custom_fan_mode_(FAN_QUIET);
       break;
-    case FanLevel::LOW:
+    case FanLevel::LEVEL_LOW:
       changed |= this->set_fan_mode_(climate::CLIMATE_FAN_LOW);
       break;
-    case FanLevel::MED_LOW:
+    case FanLevel::LEVEL_MED_LOW:
       changed |= this->set_custom_fan_mode_(FAN_MED_LOW);
       break;
-    case FanLevel::MEDIUM:
+    case FanLevel::LEVEL_MEDIUM:
       changed |= this->set_fan_mode_(climate::CLIMATE_FAN_MEDIUM);
       break;
-    case FanLevel::MED_HIGH:
+    case FanLevel::LEVEL_MED_HIGH:
       changed |= this->set_custom_fan_mode_(FAN_MED_HIGH);
       break;
-    case FanLevel::HIGH:
+    case FanLevel::LEVEL_HIGH:
       changed |= this->set_fan_mode_(climate::CLIMATE_FAN_HIGH);
       break;
     default:
@@ -325,7 +325,7 @@ void HisenseAC::apply_status_() {
     changed |= this->set_preset_(climate::CLIMATE_PRESET_ECO);
   } else if (s.quiet) {
     changed |= this->set_custom_preset_(PRESET_QUIET);
-  } else if (s.sleep != SleepMode::OFF) {
+  } else if (s.sleep != SleepMode::SLEEP_OFF) {
     // Any sleep variant set from the remote shows as the standard Sleep preset.
     changed |= this->set_preset_(climate::CLIMATE_PRESET_SLEEP);
   } else {
@@ -398,27 +398,27 @@ void HisenseAC::control(const climate::ClimateCall &call) {
     const auto fan = *call.get_fan_mode();
     switch (fan) {
       case climate::CLIMATE_FAN_LOW:
-        this->sender_.set_fan(CommandSender::CmdFan::LOW);
+        this->sender_.set_fan(CommandSender::CmdFan::CMD_LOW);
         break;
       case climate::CLIMATE_FAN_MEDIUM:
-        this->sender_.set_fan(CommandSender::CmdFan::MEDIUM);
+        this->sender_.set_fan(CommandSender::CmdFan::CMD_MEDIUM);
         break;
       case climate::CLIMATE_FAN_HIGH:
-        this->sender_.set_fan(CommandSender::CmdFan::HIGH);
+        this->sender_.set_fan(CommandSender::CmdFan::CMD_HIGH);
         break;
       default:
-        this->sender_.set_fan(CommandSender::CmdFan::AUTO);
+        this->sender_.set_fan(CommandSender::CmdFan::CMD_AUTO);
         break;
     }
     this->set_fan_mode_(fan);
   } else if (call.has_custom_fan_mode()) {
     const StringRef fan = call.get_custom_fan_mode();
     if (fan == FAN_QUIET) {
-      this->sender_.set_fan(CommandSender::CmdFan::QUIET);
+      this->sender_.set_fan(CommandSender::CmdFan::CMD_QUIET);
     } else if (fan == FAN_MED_LOW) {
-      this->sender_.set_fan(CommandSender::CmdFan::MED_LOW);
+      this->sender_.set_fan(CommandSender::CmdFan::CMD_MED_LOW);
     } else if (fan == FAN_MED_HIGH) {
-      this->sender_.set_fan(CommandSender::CmdFan::MED_HIGH);
+      this->sender_.set_fan(CommandSender::CmdFan::CMD_MED_HIGH);
     }
     this->set_custom_fan_mode_(fan);
   }
@@ -435,7 +435,7 @@ void HisenseAC::control(const climate::ClimateCall &call) {
     Preset want;
     want.eco = preset == climate::CLIMATE_PRESET_ECO;
     want.boost = preset == climate::CLIMATE_PRESET_BOOST;
-    want.sleep = preset == climate::CLIMATE_PRESET_SLEEP ? SleepMode::GENERAL : SleepMode::OFF;
+    want.sleep = preset == climate::CLIMATE_PRESET_SLEEP ? SleepMode::SLEEP_GENERAL : SleepMode::SLEEP_OFF;
     this->apply_preset_(want);
     this->set_preset_(preset);
   } else if (call.has_custom_preset()) {
@@ -465,8 +465,8 @@ void HisenseAC::apply_preset_(const Preset &want) {
     this->status_.quiet = want.quiet;
   }
   // Any sleep variant already running counts as "Sleep", so it is not overwritten.
-  const bool want_sleep = want.sleep != SleepMode::OFF;
-  const bool have_sleep = have.sleep != SleepMode::OFF;
+  const bool want_sleep = want.sleep != SleepMode::SLEEP_OFF;
+  const bool have_sleep = have.sleep != SleepMode::SLEEP_OFF;
   if (want_sleep != have_sleep) {
     this->sender_.set_sleep(want.sleep);
     this->status_.sleep = want.sleep;
