@@ -32,6 +32,10 @@ void HisenseAC::setup() {
   this->swing_mode = climate::CLIMATE_SWING_OFF;
   this->set_preset_(climate::CLIMATE_PRESET_NONE);
 
+  this->last_on_pref_ = global_preferences->make_preference<LastOn>(fnv1_hash("hisense_ac_last_on"), true);
+  if (!this->last_on_pref_.load(&this->last_on_))
+    this->last_on_ = LastOn{};
+
   this->rx_.reserve(proto::MAX_FRAME);
   this->last_step_ = millis();
   this->last_valid_ = millis();
@@ -267,6 +271,9 @@ void HisenseAC::apply_status_() {
     changed = true;
   }
 
+  if (s.power)
+    this->remember_last_on_(s.target_temp, s.fan_raw);
+
   // Temperatures
   if (this->target_temperature != s.target_temp) {
     this->target_temperature = s.target_temp;
@@ -378,6 +385,16 @@ void HisenseAC::control(const climate::ClimateCall &call) {
       if (!this->status_.power) {
         this->sender_.set_power(true);
         this->status_.power = true;
+        // Restore the last running temperature/fan unless this call sets them itself.
+        if (!call.get_target_temperature().has_value() && this->last_on_.target_temp >= 16 &&
+            this->last_on_.target_temp <= 30) {
+          this->sender_.set_temperature(this->last_on_.target_temp);
+          this->status_.target_temp = this->last_on_.target_temp;
+          this->target_temperature = this->last_on_.target_temp;
+        }
+        if (!call.get_fan_mode().has_value() && !call.has_custom_fan_mode() && this->last_on_.fan_raw != 0) {
+          this->sender_.set_fan(cmd_fan_from_level_(this->last_on_.fan_raw));
+        }
       }
       this->sender_.set_mode(mode);
     }
@@ -391,6 +408,7 @@ void HisenseAC::control(const climate::ClimateCall &call) {
     this->sender_.set_temperature(t);
     this->status_.target_temp = t;
     this->target_temperature = t;
+    this->remember_last_on_(t, this->last_on_.fan_raw);
   }
 
   // Fan
@@ -470,6 +488,35 @@ void HisenseAC::apply_preset_(const Preset &want) {
   if (want_sleep != have_sleep) {
     this->sender_.set_sleep(want.sleep);
     this->status_.sleep = want.sleep;
+  }
+}
+
+void HisenseAC::remember_last_on_(uint8_t target, uint8_t fan_raw) {
+  if (target < 16 || target > 30)
+    return;
+  if (this->last_on_.target_temp == target && this->last_on_.fan_raw == fan_raw)
+    return;
+  this->last_on_.target_temp = target;
+  this->last_on_.fan_raw = fan_raw;
+  this->last_on_pref_.save(&this->last_on_);
+}
+
+CommandSender::CmdFan HisenseAC::cmd_fan_from_level_(uint8_t fan_raw) {
+  switch (static_cast<FanLevel>(fan_raw)) {
+    case FanLevel::LEVEL_QUIET:
+      return CommandSender::CmdFan::CMD_QUIET;
+    case FanLevel::LEVEL_LOW:
+      return CommandSender::CmdFan::CMD_LOW;
+    case FanLevel::LEVEL_MED_LOW:
+      return CommandSender::CmdFan::CMD_MED_LOW;
+    case FanLevel::LEVEL_MEDIUM:
+      return CommandSender::CmdFan::CMD_MEDIUM;
+    case FanLevel::LEVEL_MED_HIGH:
+      return CommandSender::CmdFan::CMD_MED_HIGH;
+    case FanLevel::LEVEL_HIGH:
+      return CommandSender::CmdFan::CMD_HIGH;
+    default:
+      return CommandSender::CmdFan::CMD_AUTO;
   }
 }
 

@@ -4,6 +4,7 @@
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
+#include "esphome/core/preferences.h"
 #include "esphome/components/uart/uart.h"
 #include "esphome/components/climate/climate.h"
 #ifdef USE_SWITCH
@@ -81,6 +82,16 @@ class HisenseAC : public uart::UARTDevice, public Component, public climate::Cli
   uint8_t skip_status_{0};
 
   AcStatus status_{};
+
+  // Last temperature / fan used while the AC was running. Sent again on power-on so the
+  // AC does not fall back to its own default (26°C). Kept in flash across reboots.
+  struct LastOn {
+    uint8_t target_temp{0};
+    uint8_t fan_raw{0};
+  } last_on_{};
+  ESPPreferenceObject last_on_pref_;
+  void remember_last_on_(uint8_t target, uint8_t fan_raw);
+  static CommandSender::CmdFan cmd_fan_from_level_(uint8_t fan_raw);
   std::vector<uint8_t> last_payload_;  // for the bit-change log (DEBUG level)
 };
 
