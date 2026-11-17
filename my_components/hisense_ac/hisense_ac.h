@@ -56,6 +56,7 @@ class HisenseAC : public uart::UARTDevice, public Component, public climate::Cli
   void run_step_();
   void reset_link_(const char *reason);
   void apply_status_();
+  void log_payload_changes_();
   void apply_preset_(const Preset &want);
   static Preset preset_from_status_(const AcStatus &s);
 
@@ -80,6 +81,7 @@ class HisenseAC : public uart::UARTDevice, public Component, public climate::Cli
   uint8_t skip_status_{0};
 
   AcStatus status_{};
+  std::vector<uint8_t> last_payload_;  // for the bit-change log (DEBUG level)
 };
 
 #ifdef USE_SWITCH

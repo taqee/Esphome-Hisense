@@ -119,6 +119,7 @@ void HisenseAC::handle_frame_() {
   this->last_valid_ = millis();
 
   if (ProtocolDecoder::carries_status(frame) && this->linked_) {
+    this->log_payload_changes_();
     AcStatus decoded = this->status_;
     if (ProtocolDecoder::decode_status(this->rx_, decoded)) {
       this->status_ = decoded;
@@ -189,6 +190,40 @@ void HisenseAC::reset_link_(const char *reason) {
   this->skip_status_ = 0;
   this->last_valid_ = millis();
   this->sender_.clear();
+}
+
+// Logs every payload bit that changed since the previous status frame, as
+// "bit <offset>: <old> -> <new>". Set the logger to DEBUG, change something with the
+// IR remote, and read which offsets moved. Used to map undocumented features.
+void HisenseAC::log_payload_changes_() {
+#if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_DEBUG
+  if (this->rx_.size() <= proto::PAYLOAD_START + 4)
+    return;
+  const auto begin = this->rx_.begin() + proto::PAYLOAD_START;
+  const auto end = this->rx_.end() - 4;
+  std::vector<uint8_t> payload(begin, end);
+
+  if (!this->last_payload_.empty() && this->last_payload_.size() == payload.size()) {
+    std::string out;
+    for (size_t i = 0; i < payload.size(); i++) {
+      const uint8_t diff = payload[i] ^ this->last_payload_[i];
+      if (diff == 0)
+        continue;
+      for (uint8_t b = 0; b < 8; b++) {
+        const uint8_t mask = 0x80 >> b;
+        if (diff & mask) {
+          char buf[32];
+          snprintf(buf, sizeof(buf), " %u:%d>%d", (unsigned) (i * 8 + b), (this->last_payload_[i] & mask) ? 1 : 0,
+                   (payload[i] & mask) ? 1 : 0);
+          out += buf;
+        }
+      }
+    }
+    if (!out.empty())
+      ESP_LOGD("hisense_ac.diff", "Changed bits (offset:old>new):%s", out.c_str());
+  }
+  this->last_payload_ = std::move(payload);
+#endif
 }
 
 // ---------------------------------------------------------------- AC -> Home Assistant
