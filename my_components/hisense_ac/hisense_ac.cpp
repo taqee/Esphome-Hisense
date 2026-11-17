@@ -23,7 +23,7 @@ void HisenseAC::setup() {
   }
 
   this->set_supported_custom_fan_modes({FAN_QUIET, FAN_MED_LOW, FAN_MED_HIGH});
-  this->set_supported_custom_presets({PRESET_QUIET, PRESET_SLEEP_YOUNG, PRESET_SLEEP_OLD, PRESET_SLEEP_KIDS});
+  this->set_supported_custom_presets({PRESET_QUIET});
 
   this->mode = climate::CLIMATE_MODE_OFF;
   this->target_temperature = 25;
@@ -290,14 +290,9 @@ void HisenseAC::apply_status_() {
     changed |= this->set_preset_(climate::CLIMATE_PRESET_ECO);
   } else if (s.quiet) {
     changed |= this->set_custom_preset_(PRESET_QUIET);
-  } else if (s.sleep == SleepMode::GENERAL) {
+  } else if (s.sleep != SleepMode::OFF) {
+    // Any sleep variant set from the remote shows as the standard Sleep preset.
     changed |= this->set_preset_(climate::CLIMATE_PRESET_SLEEP);
-  } else if (s.sleep == SleepMode::YOUNG) {
-    changed |= this->set_custom_preset_(PRESET_SLEEP_YOUNG);
-  } else if (s.sleep == SleepMode::OLD) {
-    changed |= this->set_custom_preset_(PRESET_SLEEP_OLD);
-  } else if (s.sleep == SleepMode::KIDS) {
-    changed |= this->set_custom_preset_(PRESET_SLEEP_KIDS);
   } else {
     changed |= this->set_preset_(climate::CLIMATE_PRESET_NONE);
   }
@@ -411,15 +406,7 @@ void HisenseAC::control(const climate::ClimateCall &call) {
   } else if (call.has_custom_preset()) {
     const StringRef preset = call.get_custom_preset();
     Preset want;
-    if (preset == PRESET_QUIET) {
-      want.quiet = true;
-    } else if (preset == PRESET_SLEEP_YOUNG) {
-      want.sleep = SleepMode::YOUNG;
-    } else if (preset == PRESET_SLEEP_OLD) {
-      want.sleep = SleepMode::OLD;
-    } else if (preset == PRESET_SLEEP_KIDS) {
-      want.sleep = SleepMode::KIDS;
-    }
+    want.quiet = preset == PRESET_QUIET;
     this->apply_preset_(want);
     this->set_custom_preset_(preset);
   }
@@ -442,7 +429,10 @@ void HisenseAC::apply_preset_(const Preset &want) {
     this->sender_.set_quiet(want.quiet);
     this->status_.quiet = want.quiet;
   }
-  if (want.sleep != have.sleep) {
+  // Any sleep variant already running counts as "Sleep", so it is not overwritten.
+  const bool want_sleep = want.sleep != SleepMode::OFF;
+  const bool have_sleep = have.sleep != SleepMode::OFF;
+  if (want_sleep != have_sleep) {
     this->sender_.set_sleep(want.sleep);
     this->status_.sleep = want.sleep;
   }

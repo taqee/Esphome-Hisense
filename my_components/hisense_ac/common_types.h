@@ -47,9 +47,6 @@ struct AcStatus {
 
 // Preset names shown in the Home Assistant climate card.
 static constexpr const char *PRESET_QUIET = "Quiet";
-static constexpr const char *PRESET_SLEEP_OLD = "Sleep Old";
-static constexpr const char *PRESET_SLEEP_YOUNG = "Sleep Young";
-static constexpr const char *PRESET_SLEEP_KIDS = "Sleep Kids";
 
 // Extra fan speeds shown in the card next to Auto/Low/Medium/High.
 static constexpr const char *FAN_QUIET = "Quiet";
