@@ -1,0 +1,61 @@
+substitutions:
+  device_name: "2nd-bedroom-ac"
+  upper_name: "2nd Bedroom AC"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${upper_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/taqee/Esphome-Hisense
+      path: my_components
+      ref: v2-cleanup
+    refresh: 0s
+    components: [hisense_ac]
+
+logger:
+  level: INFO
+  baud_rate: 0 # UART0 free, the AC uses UART on GPIO16/17
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  platform: esphome
+  password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  min_auth_mode: WPA2
+  ap:
+    ssid: "${upper_name} Fallback"
+    password: !secret ota_password
+
+captive_portal:
+
+uart:
+  id: ac_uart
+  tx_pin: GPIO17
+  rx_pin:
+    number: GPIO16
+    mode: INPUT_PULLUP
+  baud_rate: 9600
+
+climate:
+  - platform: hisense_ac
+    name: "Hisense AC"
+    uart_id: ac_uart
+    flow_control_pin: GPIO5
+    display:
+      name: "Display"
+    beep:
+      name: "Beep"

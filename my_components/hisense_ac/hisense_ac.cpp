@@ -1,612 +1,458 @@
 #include "hisense_ac.h"
-#include "protocol_decoder.h"
-#include "command_sender.h"
-#include "common_types.h"
+#include <cmath>
+#include <cstring>
 #include "esphome/core/log.h"
-#include "esphome/core/helpers.h"
 
 namespace esphome {
 namespace hisense_ac {
 
 static const char *const TAG = "hisense_ac";
 
-HisenseAC::HisenseAC() : decoder_(nullptr), sender_(nullptr) {
-  ESP_LOGI(TAG, "=== Hisense AC Constructor Called ===");
-  ESP_LOGI(TAG, "Constructor - Component address: %p", this);
-}
+static constexpr uint32_t STEP_INTERVAL_MS = 2000;     // normal pace of the polling loop
+static constexpr uint32_t COMMAND_INTERVAL_MS = 1000;  // a pending command may jump the queue after this
+static constexpr uint32_t RX_GAP_MS = 100;             // drop a half-received frame after this silence
+static constexpr uint32_t LINK_TIMEOUT_MS = 30000;     // no valid frame for this long -> restart init
+static constexpr uint8_t MAX_BAD_FRAMES = 5;
 
-HisenseAC::~HisenseAC() {
-  ESP_LOGI(TAG, "=== Hisense AC Destructor Called ===");
-  if (decoder_) {
-    delete decoder_;
-    decoder_ = nullptr;
-  }
-  if (sender_) {
-    delete sender_;
-    sender_ = nullptr;
-  }
-}
+// ---------------------------------------------------------------- lifecycle
 
 void HisenseAC::setup() {
-  ESP_LOGI(TAG, "=== Hisense AC Setup Starting ===");
-  ESP_LOGI(TAG, "Setup - Component address: %p", this);
-  ESP_LOGCONFIG(TAG, "Setting up Hisense AC...");
-  
-  // UART is automatically available through UARTDevice inheritance
-  ESP_LOGI(TAG, "UART device initialized");
-
   if (this->flow_control_pin_ != nullptr) {
     this->flow_control_pin_->setup();
+    this->flow_control_pin_->digital_write(false);
   }
-  ESP_LOGI(TAG, "Flow control pin setup complete");
-  
-  // Initialize helper components
-  this->decoder_ = nullptr;
-  this->sender_ = nullptr;
-  
-  ESP_LOGI(TAG, "Creating ProtocolDecoder...");
-  this->decoder_ = new ProtocolDecoder(this);
-  if (this->decoder_) {
-    ESP_LOGI(TAG, "ProtocolDecoder created successfully at %p", this->decoder_);
-  } else {
-    ESP_LOGE(TAG, "ProtocolDecoder is null after creation");
-    this->mark_failed();
-    return;
-  }
-  
-  ESP_LOGI(TAG, "Creating CommandSender...");
-  this->sender_ = new CommandSender(this);
-  if (this->sender_) {
-    ESP_LOGI(TAG, "CommandSender created successfully at %p", this->sender_);
-    // Initialize command data buffer (30 bytes)
-    this->sender_->initialize_command_buffer();
-  } else {
-    ESP_LOGE(TAG, "CommandSender is null after creation");
-    this->mark_failed();
-    return;
-  }
-  
-  // Set initial state - start with automatic initialization
-  this->state_ = STATE_INIT_1;
-  this->last_message_time_ = millis();
-  this->last_state_time_ = millis();
-  this->command_state_ = CommandState{};  // Initialize command state
-  
-  // Set climate initial state
+
+  this->set_supported_custom_fan_modes({FAN_QUIET, FAN_MED_LOW, FAN_MED_HIGH});
+  this->set_supported_custom_presets({PRESET_QUIET, PRESET_SLEEP_YOUNG, PRESET_SLEEP_OLD, PRESET_SLEEP_KIDS});
+
   this->mode = climate::CLIMATE_MODE_OFF;
   this->target_temperature = 25;
-  this->current_temperature = 25;
-  this->fan_mode = climate::CLIMATE_FAN_AUTO;
+  this->current_temperature = NAN;
+  this->set_fan_mode_(climate::CLIMATE_FAN_AUTO);
   this->swing_mode = climate::CLIMATE_SWING_OFF;
-  this->preset = climate::CLIMATE_PRESET_NONE;
+  this->set_preset_(climate::CLIMATE_PRESET_NONE);
 
-  this->set_supported_custom_fan_modes({"Quiet", "Med-Low", "Med-High"});
-  
-  ESP_LOGI(TAG, "=== Hisense AC Setup Complete ===");
-  ESP_LOGCONFIG(TAG, "Hisense AC setup complete");
-}
-
-float HisenseAC::get_setup_priority() const {
-  // Set high priority to ensure UART is ready
-  return esphome::setup_priority::DATA;
-}
-
-void HisenseAC::loop() {
-  uint32_t now = millis();
-  
-  // Check if we should execute the next state action
-  bool should_execute = false;
-  
-  if (this->automatic_execution_) {
-    // Automatic mode: execute if enough time has passed
-    should_execute = (now - this->last_state_time_) >= this->state_interval_;
-  } else {
-    // Manual mode: only execute when button is pressed
-    should_execute = this->manual_step_requested_;
-    if (this->manual_step_requested_) {
-      this->manual_step_requested_ = false;  // Reset flag
-      ESP_LOGI(TAG, "Manual step triggered");
-    }
-  }
-  
-  if (!should_execute) {
-    return;  // Wait for timing or manual trigger
-  }
-  
-  // Handle consecutive failures - reset to init if too many
-  if (this->command_state_.consecutive_failures >= CommandState::MAX_FAILURES) {
-    ESP_LOGW(TAG, "Too many consecutive failures (%d), resetting to INIT_1", 
-             this->command_state_.consecutive_failures);
-    this->state_ = STATE_INIT_1;
-    this->command_state_.consecutive_failures = 0;
-    this->init_complete_ = false;
-    this->ac_state_known_ = false;
-  }
-  
-  // State machine implementation
-  if (!this->sender_) {
-    ESP_LOGW(TAG, "Sender not available, skipping state execution");
-    return;
-  }
-  
-  switch (this->state_) {
-    case STATE_INIT_1:
-      ESP_LOGD(TAG, "Executing STATE_INIT_1 - sending init message 1");
-      this->sender_->send_init_message_1();
-      this->last_state_time_ = now;
-      this->command_state_.reply_received = false;
-      break;
-      
-    case STATE_INIT_2:
-      ESP_LOGD(TAG, "Executing STATE_INIT_2 - sending init message 2");
-      this->sender_->send_init_message_2();
-      this->last_state_time_ = now;
-      this->command_state_.reply_received = false;
-      break;
-      
-    case STATE_INIT_3:
-      ESP_LOGD(TAG, "Executing STATE_INIT_3 - sending init message 3");
-      this->sender_->send_init_message_3();
-      this->last_state_time_ = now;
-      this->command_state_.reply_received = false;
-      break;
-      
-    case STATE_WIFI_STATUS:
-      // Check if we have a queued HA command - it takes precedence
-      if (this->command_state_.pending) {
-        ESP_LOGD(TAG, "Executing queued HA command instead of wifi status");
-        this->sender_->send_prepared_command();  // Send the prepared command
-        this->command_state_.pending = false;
-        this->sender_->clear_command_buffer();  // Clear command buffer
-      } else {
-        ESP_LOGD(TAG, "Executing STATE_WIFI_STATUS - sending wifi status");
-        this->sender_->send_wifi_status();
-      }
-      this->last_state_time_ = now;
-      this->command_state_.reply_received = false;
-      break;
-      
-    case STATE_POLLING:
-      // Check if we have a queued HA command - it takes precedence
-      if (this->command_state_.pending) {
-        ESP_LOGD(TAG, "Executing queued HA command instead of status poll");
-        this->sender_->send_prepared_command();  // Send the prepared command
-        this->command_state_.pending = false;
-        this->sender_->clear_command_buffer();  // Clear command buffer
-      } else if (!this->ac_state_known_) {
-        ESP_LOGD(TAG, "Executing STATE_POLLING - first status request");
-        this->sender_->send_status_request();
-      } else {
-        ESP_LOGD(TAG, "Executing STATE_POLLING - regular status request");
-        this->sender_->send_status_request();
-      }
-      this->last_state_time_ = now;
-      this->command_state_.reply_received = false;
-      break;
-  }
+  this->rx_.reserve(proto::MAX_FRAME);
+  this->last_step_ = millis();
+  this->last_valid_ = millis();
 }
 
 void HisenseAC::dump_config() {
-  ESP_LOGCONFIG(TAG, "Hisense AC:");
-  ESP_LOGCONFIG(TAG, "  UART Device: Available");
-  ESP_LOGCONFIG(TAG, "  ProtocolDecoder sent: %d", this->messages_sent_);
-  ESP_LOGCONFIG(TAG, "  ProtocolDecoder received: %d", this->messages_received_);
-  ESP_LOGCONFIG(TAG, "  CRC errors: %d", this->crc_errors_);
+  ESP_LOGCONFIG(TAG, "Hisense AC");
+  LOG_PIN("  Flow control pin: ", this->flow_control_pin_);
 }
 
-void HisenseAC::on_uart_message(const std::vector<uint8_t>& data) {
-  // Force setup if not already done
-  if (!this->decoder_ && !this->sender_) {
-    ESP_LOGI(TAG, "Forcing component setup from on_uart_message");
-    this->setup();
-  }
-  
-  // Safety check for decoder with detailed logging
-  ESP_LOGV(TAG, "Checking decoder pointer: %p", this->decoder_);
-  if (!this->decoder_) {
-    ESP_LOGE(TAG, "Decoder not initialized! Component state: init_complete=%s, ac_state_known=%s, state=%d", 
-             this->init_complete_ ? "YES" : "NO", 
-             this->ac_state_known_ ? "YES" : "NO", 
-             (int)this->state_);
-    ESP_LOGE(TAG, "Component address: %p, sender address: %p", this, this->sender_);
+void HisenseAC::loop() {
+  this->read_uart_();
+
+  const uint32_t now = millis();
+  if (this->linked_ && now - this->last_valid_ > LINK_TIMEOUT_MS) {
+    this->reset_link_("no reply from AC");
     return;
   }
-  
-  ESP_LOGD(TAG, "Decoder is valid, proceeding with message validation");
-  
-  // Validate message using the decoder
-  auto validation_result = this->decoder_->validate_message(data);
-  if (validation_result.valid) {
-    ESP_LOGD(TAG, "Valid message received - processing and updating state machine");
-    
-    // Mark that we received a reply
-    this->command_state_.reply_received = true;
-    this->command_state_.consecutive_failures = 0;  // Reset failure counter
-    this->last_message_time_ = millis();
-    this->messages_received_++;
-    
-  // Decode the message - only handle Command and StatusRequest replies
-  bool is_command_reply = (validation_result.msg_packet_type == ProtocolDecoder::MessageTypes::Command::TYPE && 
-    validation_result.msg_sub_type == ProtocolDecoder::MessageTypes::Command::SUB_TYPE);
-  bool is_status_reply = (validation_result.msg_packet_type == ProtocolDecoder::MessageTypes::StatusRequest::TYPE && 
-  validation_result.msg_sub_type == ProtocolDecoder::MessageTypes::StatusRequest::SUB_TYPE);
 
-  if (is_command_reply) {
-  ESP_LOGD(TAG, "Decoding command reply message (0x%02X/0x%02X)", 
-  ProtocolDecoder::MessageTypes::Command::TYPE, ProtocolDecoder::MessageTypes::Command::SUB_TYPE);
-  this->decoder_->decode_status_message(data);
-  } else if (is_status_reply) {
-  ESP_LOGD(TAG, "Decoding status reply message (0x%02X/0x%02X)", 
-  ProtocolDecoder::MessageTypes::StatusRequest::TYPE, ProtocolDecoder::MessageTypes::StatusRequest::SUB_TYPE);
-  this->decoder_->decode_status_message(data);
-  } else {
-  // Log and ignore other message types
-  ESP_LOGV(TAG, "Ignoring message type 0x%02X/0x%02X", 
-  validation_result.msg_packet_type, validation_result.msg_sub_type);
-  }
-    
-    // Handle state transitions based on current state
-    switch (this->state_) {
-      case STATE_INIT_1:
-        ESP_LOGI(TAG, "Init 1 reply received - advancing to INIT_2");
-        this->state_ = STATE_INIT_2;
-        break;
-        
-      case STATE_INIT_2:
-        ESP_LOGI(TAG, "Init 2 reply received - advancing to INIT_3");
-        this->state_ = STATE_INIT_3;
-        break;
-        
-      case STATE_INIT_3:
-        ESP_LOGI(TAG, "Init 3 reply received - advancing to WIFI_STATUS, initialization complete");
-        this->state_ = STATE_WIFI_STATUS;
-        this->init_complete_ = true;
-        break;
-        
-      case STATE_WIFI_STATUS:
-        ESP_LOGD(TAG, "Wifi status reply received - advancing to POLLING");
-        this->state_ = STATE_POLLING;
-        break;
-        
-      case STATE_POLLING:
-        ESP_LOGD(TAG, "Status reply received - advancing to WIFI_STATUS");
-        this->state_ = STATE_WIFI_STATUS;
-        this->ac_state_known_ = true;  // Mark that we know the AC state
-        break;
-    }
-    
-    // Publish state update to ESPHome
-    this->publish_state();
-    
-  } else {
-    ESP_LOGW(TAG, "Invalid message received (CRC or format error)");
-    this->crc_errors_++;
-    this->command_state_.consecutive_failures++;
-    
-    ESP_LOGW(TAG, "Consecutive failures: %d/%d", 
-             this->command_state_.consecutive_failures, CommandState::MAX_FAILURES);
+  const uint32_t wait = (this->linked_ && this->sender_.has_changes()) ? COMMAND_INTERVAL_MS : STEP_INTERVAL_MS;
+  if (now - this->last_step_ >= wait) {
+    this->last_step_ = now;
+    this->run_step_();
   }
 }
+
+// ---------------------------------------------------------------- UART
+
+void HisenseAC::write_frame(const uint8_t *data, size_t len) {
+  if (this->flow_control_pin_ != nullptr)
+    this->flow_control_pin_->digital_write(true);
+  this->write_array(data, len);
+  // Wait for the last byte to leave before switching the RS485 driver back to receive.
+  this->flush();
+  if (this->flow_control_pin_ != nullptr)
+    this->flow_control_pin_->digital_write(false);
+}
+
+void HisenseAC::read_uart_() {
+  const uint32_t now = millis();
+  if (!this->rx_.empty() && now - this->last_rx_byte_ > RX_GAP_MS) {
+    ESP_LOGV(TAG, "Dropping partial frame (%u bytes)", (unsigned) this->rx_.size());
+    this->rx_.clear();
+  }
+
+  uint8_t byte;
+  while (this->available() && this->read_byte(&byte)) {
+    this->last_rx_byte_ = now;
+
+    // Wait for F4 F5 at the start of a frame.
+    if (this->rx_.empty() && byte != proto::HEADER_1)
+      continue;
+    if (this->rx_.size() == 1 && byte != proto::HEADER_2) {
+      this->rx_.clear();
+      if (byte == proto::HEADER_1)
+        this->rx_.push_back(byte);
+      continue;
+    }
+    this->rx_.push_back(byte);
+
+    // Byte 4 is the length field: whole frame = length + 9.
+    if (this->rx_.size() >= 5) {
+      const size_t expected = static_cast<size_t>(this->rx_[4]) + proto::LENGTH_OVERHEAD;
+      if (expected < proto::MIN_FRAME) {
+        this->rx_.clear();
+        continue;
+      }
+      if (this->rx_.size() == expected) {
+        this->handle_frame_();
+        this->rx_.clear();
+      }
+    }
+  }
+}
+
+void HisenseAC::handle_frame_() {
+  const auto frame = ProtocolDecoder::validate(this->rx_);
+  if (!frame.valid) {
+    ESP_LOGW(TAG, "Invalid frame from AC (%u bytes)", (unsigned) this->rx_.size());
+    if (++this->bad_frames_ >= MAX_BAD_FRAMES)
+      this->reset_link_("too many invalid frames");
+    return;
+  }
+  this->bad_frames_ = 0;
+  this->last_valid_ = millis();
+
+  if (ProtocolDecoder::carries_status(frame) && this->linked_) {
+    AcStatus decoded = this->status_;
+    if (ProtocolDecoder::decode_status(this->rx_, decoded)) {
+      this->status_ = decoded;
+      this->status_known_ = true;
+      if (this->skip_status_ > 0) {
+        this->skip_status_--;
+      } else {
+        this->apply_status_();
+      }
+    }
+  }
+
+  // Each reply moves the handshake / polling loop forward.
+  switch (this->step_) {
+    case Step::INIT_1:
+      this->step_ = Step::INIT_2;
+      break;
+    case Step::INIT_2:
+      this->step_ = Step::INIT_3;
+      break;
+    case Step::INIT_3:
+      this->step_ = Step::WIFI_STATUS;
+      this->linked_ = true;
+      ESP_LOGI(TAG, "Connected to AC");
+      break;
+    case Step::WIFI_STATUS:
+      this->step_ = Step::POLLING;
+      break;
+    case Step::POLLING:
+      this->step_ = Step::WIFI_STATUS;
+      break;
+  }
+}
+
+void HisenseAC::run_step_() {
+  switch (this->step_) {
+    case Step::INIT_1:
+      this->sender_.send_init_1();
+      return;
+    case Step::INIT_2:
+      this->sender_.send_init_2();
+      return;
+    case Step::INIT_3:
+      this->sender_.send_init_3();
+      return;
+    case Step::WIFI_STATUS:
+    case Step::POLLING:
+      break;
+  }
+
+  // A user command takes the slot of the next wifi-status / poll message.
+  if (this->sender_.has_changes()) {
+    ESP_LOGD(TAG, "Sending command");
+    this->sender_.send_command(this->beep_);
+    this->skip_status_ = 1;
+  } else if (this->step_ == Step::WIFI_STATUS) {
+    this->sender_.send_wifi_status();
+  } else {
+    this->sender_.send_status_request();
+  }
+}
+
+void HisenseAC::reset_link_(const char *reason) {
+  ESP_LOGW(TAG, "Restarting AC handshake: %s", reason);
+  this->step_ = Step::INIT_1;
+  this->linked_ = false;
+  this->bad_frames_ = 0;
+  this->skip_status_ = 0;
+  this->last_valid_ = millis();
+  this->sender_.clear();
+}
+
+// ---------------------------------------------------------------- AC -> Home Assistant
+
+HisenseAC::Preset HisenseAC::preset_from_status_(const AcStatus &s) {
+  Preset p;
+  p.eco = s.eco;
+  p.boost = s.boost;
+  p.quiet = s.quiet;
+  p.sleep = s.sleep;
+  return p;
+}
+
+void HisenseAC::apply_status_() {
+  const AcStatus &s = this->status_;
+  bool changed = false;
+
+  // Mode
+  climate::ClimateMode mode = climate::CLIMATE_MODE_OFF;
+  if (s.power) {
+    switch (s.mode_raw) {
+      case 0:
+        mode = climate::CLIMATE_MODE_FAN_ONLY;
+        break;
+      case 1:
+        mode = climate::CLIMATE_MODE_HEAT;
+        break;
+      case 2:
+        mode = climate::CLIMATE_MODE_COOL;
+        break;
+      case 3:
+        mode = climate::CLIMATE_MODE_DRY;
+        break;
+      default:
+        mode = climate::CLIMATE_MODE_AUTO;  // 4..7 = auto (with remote offsets)
+        break;
+    }
+  }
+  if (this->mode != mode) {
+    this->mode = mode;
+    changed = true;
+  }
+
+  // Temperatures
+  if (this->target_temperature != s.target_temp) {
+    this->target_temperature = s.target_temp;
+    changed = true;
+  }
+  if (this->current_temperature != s.current_temp) {
+    this->current_temperature = s.current_temp;
+    changed = true;
+  }
+
+  // Fan
+  switch (static_cast<FanLevel>(s.fan_raw)) {
+    case FanLevel::QUIET:
+      changed |= this->set_custom_fan_mode_(FAN_QUIET);
+      break;
+    case FanLevel::LOW:
+      changed |= this->set_fan_mode_(climate::CLIMATE_FAN_LOW);
+      break;
+    case FanLevel::MED_LOW:
+      changed |= this->set_custom_fan_mode_(FAN_MED_LOW);
+      break;
+    case FanLevel::MEDIUM:
+      changed |= this->set_fan_mode_(climate::CLIMATE_FAN_MEDIUM);
+      break;
+    case FanLevel::MED_HIGH:
+      changed |= this->set_custom_fan_mode_(FAN_MED_HIGH);
+      break;
+    case FanLevel::HIGH:
+      changed |= this->set_fan_mode_(climate::CLIMATE_FAN_HIGH);
+      break;
+    default:
+      changed |= this->set_fan_mode_(climate::CLIMATE_FAN_AUTO);
+      break;
+  }
+
+  // Swing
+  const bool vertical = s.direction == 2 && s.swing_up_down;
+  const bool horizontal = s.swing_left_right;
+  climate::ClimateSwingMode swing = climate::CLIMATE_SWING_OFF;
+  if (vertical && horizontal) {
+    swing = climate::CLIMATE_SWING_BOTH;
+  } else if (vertical) {
+    swing = climate::CLIMATE_SWING_VERTICAL;
+  } else if (horizontal) {
+    swing = climate::CLIMATE_SWING_HORIZONTAL;
+  }
+  if (this->swing_mode != swing) {
+    this->swing_mode = swing;
+    changed = true;
+  }
+
+  // Preset (one at a time in the card; boost > eco > quiet > sleep if the AC reports several)
+  if (s.boost) {
+    changed |= this->set_preset_(climate::CLIMATE_PRESET_BOOST);
+  } else if (s.eco) {
+    changed |= this->set_preset_(climate::CLIMATE_PRESET_ECO);
+  } else if (s.quiet) {
+    changed |= this->set_custom_preset_(PRESET_QUIET);
+  } else if (s.sleep == SleepMode::GENERAL) {
+    changed |= this->set_preset_(climate::CLIMATE_PRESET_SLEEP);
+  } else if (s.sleep == SleepMode::YOUNG) {
+    changed |= this->set_custom_preset_(PRESET_SLEEP_YOUNG);
+  } else if (s.sleep == SleepMode::OLD) {
+    changed |= this->set_custom_preset_(PRESET_SLEEP_OLD);
+  } else if (s.sleep == SleepMode::KIDS) {
+    changed |= this->set_custom_preset_(PRESET_SLEEP_KIDS);
+  } else {
+    changed |= this->set_preset_(climate::CLIMATE_PRESET_NONE);
+  }
+
+#ifdef USE_SWITCH
+  if (this->display_switch_ != nullptr &&
+      (!this->display_switch_->has_state() || this->display_switch_->state != s.display))
+    this->display_switch_->publish_state(s.display);
+#endif
+
+  if (changed)
+    this->publish_state();
+}
+
+// ---------------------------------------------------------------- Home Assistant -> AC
 
 climate::ClimateTraits HisenseAC::traits() {
   auto traits = climate::ClimateTraits();
-  
-  // Supported modes
-  traits.set_supported_modes({
-    climate::CLIMATE_MODE_OFF,
-    climate::CLIMATE_MODE_AUTO,  // Auto
-    climate::CLIMATE_MODE_COOL,
-    climate::CLIMATE_MODE_HEAT,
-    climate::CLIMATE_MODE_DRY,
-    climate::CLIMATE_MODE_FAN_ONLY
-  });
-  
-  // Supported fan modes
-  traits.set_supported_fan_modes({
-    climate::CLIMATE_FAN_OFF,
-    climate::CLIMATE_FAN_AUTO,
-    climate::CLIMATE_FAN_LOW,
-    climate::CLIMATE_FAN_MEDIUM,
-    climate::CLIMATE_FAN_HIGH
-  });
-  
-  // Supported swing modes
-  traits.set_supported_swing_modes({
-    climate::CLIMATE_SWING_OFF,
-    climate::CLIMATE_SWING_VERTICAL,
-    climate::CLIMATE_SWING_HORIZONTAL,
-    climate::CLIMATE_SWING_BOTH
-  });
-
-  traits.set_supported_presets({
-    climate::CLIMATE_PRESET_NONE,
-    climate::CLIMATE_PRESET_SLEEP,
-    climate::CLIMATE_PRESET_BOOST,
-    climate::CLIMATE_PRESET_ECO
-  });
-  
-  // Temperature range
+  traits.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE);
+  traits.set_supported_modes({climate::CLIMATE_MODE_OFF, climate::CLIMATE_MODE_AUTO, climate::CLIMATE_MODE_COOL,
+                              climate::CLIMATE_MODE_HEAT, climate::CLIMATE_MODE_DRY, climate::CLIMATE_MODE_FAN_ONLY});
+  traits.set_supported_fan_modes({climate::CLIMATE_FAN_AUTO, climate::CLIMATE_FAN_LOW, climate::CLIMATE_FAN_MEDIUM,
+                                  climate::CLIMATE_FAN_HIGH});
+  traits.set_supported_swing_modes({climate::CLIMATE_SWING_OFF, climate::CLIMATE_SWING_VERTICAL,
+                                    climate::CLIMATE_SWING_HORIZONTAL, climate::CLIMATE_SWING_BOTH});
+  traits.set_supported_presets({climate::CLIMATE_PRESET_NONE, climate::CLIMATE_PRESET_ECO,
+                                climate::CLIMATE_PRESET_BOOST, climate::CLIMATE_PRESET_SLEEP});
   traits.set_visual_min_temperature(16);
   traits.set_visual_max_temperature(30);
   traits.set_visual_temperature_step(1);
-  
-  traits.add_feature_flags(esphome::climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE);
-  
   return traits;
 }
 
 void HisenseAC::control(const climate::ClimateCall &call) {
-  // Only process control commands if initialization is complete
-  if (!this->init_complete_) {
-    ESP_LOGW(TAG, "Control called but initialization not complete, ignoring");
+  if (!this->linked_) {
+    ESP_LOGW(TAG, "AC not connected yet, ignoring command");
+    this->publish_state();
     return;
   }
-  
-  // Track what changed for smart command generation
-  std::vector<std::string> changes;
-  
-  // Handle mode changes
+
+  // Mode / power
   if (call.get_mode().has_value()) {
-    climate::ClimateMode new_mode = *call.get_mode();
-    if (new_mode != this->mode) {
-      this->mode = new_mode;
-      this->current_mode_ = new_mode;
-      changes.push_back("mode");
-      ESP_LOGD(TAG, "Mode changed to: %d", (int)new_mode);
+    const auto mode = *call.get_mode();
+    if (mode == climate::CLIMATE_MODE_OFF) {
+      this->sender_.set_power(false);
+      this->status_.power = false;
+    } else {
+      if (!this->status_.power) {
+        this->sender_.set_power(true);
+        this->status_.power = true;
+      }
+      this->sender_.set_mode(mode);
     }
-  }
-  
-  // Handle temperature changes
-  if (call.get_target_temperature().has_value()) {
-    uint8_t new_temp = *call.get_target_temperature();
-    if (abs(new_temp - this->target_temperature) > 0) {
-      this->target_temperature = new_temp;
-      this->target_temp_ = new_temp;
-      changes.push_back("temperature");
-      ESP_LOGD(TAG, "Target temperature changed to: %d", new_temp);
-    }
-  }
-  
-  // Handle fan mode changes (standard modes)
-  if (call.get_fan_mode().has_value()) {
-    climate::ClimateFanMode new_fan = *call.get_fan_mode();
-    if (new_fan != this->fan_mode) {
-      this->fan_mode = new_fan;
-      this->current_fan_mode_ = new_fan;
-      this->current_custom_fan_mode_ = "";  // Clear custom mode when using standard
-      changes.push_back("fan_mode");
-      ESP_LOGD(TAG, "Fan mode changed to: %d", (int)new_fan);
-    }
-  }
-  
-  // Handle custom fan mode changes
-  StringRef new_custom_fan = call.get_custom_fan_mode();
-  if (!new_custom_fan.empty()) {
-    std::string fan_str(new_custom_fan.c_str());
-    if (new_custom_fan != this->current_custom_fan_mode_) {
-      this->current_custom_fan_mode_ = new_custom_fan;
-      this->set_custom_fan_mode_(fan_str.c_str());
-      this->current_fan_mode_ = climate::CLIMATE_FAN_ON;
-      this->fan_mode = climate::CLIMATE_FAN_ON;
-      changes.push_back("fan_mode");
-      ESP_LOGD(TAG, "Custom fan mode changed to: %s", new_custom_fan.c_str());
-    }
-  }
-  
-  // Handle swing mode changes
-  if (call.get_swing_mode().has_value()) {
-    climate::ClimateSwingMode new_swing = *call.get_swing_mode();
-    if (new_swing != this->swing_mode) {
-      this->swing_mode = new_swing;
-      this->current_swing_mode_ = new_swing;
-      changes.push_back("swing_mode");
-      ESP_LOGD(TAG, "Swing mode changed to: %d", (int)new_swing);
-    }
+    this->mode = mode;
   }
 
-  // Handle preset mode changes - ارسال الأوامر اللي تغيرت فقط
+  // Target temperature
+  if (call.get_target_temperature().has_value()) {
+    int t = static_cast<int>(lroundf(*call.get_target_temperature()));
+    t = t < 16 ? 16 : (t > 30 ? 30 : t);
+    this->sender_.set_temperature(t);
+    this->status_.target_temp = t;
+    this->target_temperature = t;
+  }
+
+  // Fan
+  if (call.get_fan_mode().has_value()) {
+    const auto fan = *call.get_fan_mode();
+    switch (fan) {
+      case climate::CLIMATE_FAN_LOW:
+        this->sender_.set_fan(CommandSender::CmdFan::LOW);
+        break;
+      case climate::CLIMATE_FAN_MEDIUM:
+        this->sender_.set_fan(CommandSender::CmdFan::MEDIUM);
+        break;
+      case climate::CLIMATE_FAN_HIGH:
+        this->sender_.set_fan(CommandSender::CmdFan::HIGH);
+        break;
+      default:
+        this->sender_.set_fan(CommandSender::CmdFan::AUTO);
+        break;
+    }
+    this->set_fan_mode_(fan);
+  } else if (call.has_custom_fan_mode()) {
+    const StringRef fan = call.get_custom_fan_mode();
+    if (fan == FAN_QUIET) {
+      this->sender_.set_fan(CommandSender::CmdFan::QUIET);
+    } else if (fan == FAN_MED_LOW) {
+      this->sender_.set_fan(CommandSender::CmdFan::MED_LOW);
+    } else if (fan == FAN_MED_HIGH) {
+      this->sender_.set_fan(CommandSender::CmdFan::MED_HIGH);
+    }
+    this->set_custom_fan_mode_(fan);
+  }
+
+  // Swing
+  if (call.get_swing_mode().has_value()) {
+    this->swing_mode = *call.get_swing_mode();
+    this->sender_.set_swing(this->swing_mode);
+  }
+
+  // Preset
   if (call.get_preset().has_value()) {
-    climate::ClimatePreset new_preset = *call.get_preset();
-    if (new_preset != this->preset) {
-      this->preset = new_preset;
-      this->current_preset_ = new_preset;
-      
-      bool new_sleep = false;
-      bool new_boost = false;
-      bool new_eco = false;
-      
-      if (new_preset == climate::CLIMATE_PRESET_SLEEP) {
-        new_sleep = true;
-      } else if (new_preset == climate::CLIMATE_PRESET_BOOST) {
-        new_boost = true;
-      } else if (new_preset == climate::CLIMATE_PRESET_ECO) {
-        new_eco = true;
-      }
-      
-      // نسجل التغييرات للي اختلف حالته بس
-      if (this->sleep_enabled_ != new_sleep) {
-        this->sleep_enabled_ = new_sleep;
-        changes.push_back("sleep");
-      }
-      if (this->boost_mode_ != new_boost) {
-        this->boost_mode_ = new_boost;
-        changes.push_back("boost");
-      }
-      if (this->eco_mode_ != new_eco) {
-        this->eco_mode_ = new_eco;
-        changes.push_back("eco");
-      }
-      
-      ESP_LOGD(TAG, "Preset changed to: %d", (int)new_preset);
+    const auto preset = *call.get_preset();
+    Preset want;
+    want.eco = preset == climate::CLIMATE_PRESET_ECO;
+    want.boost = preset == climate::CLIMATE_PRESET_BOOST;
+    want.sleep = preset == climate::CLIMATE_PRESET_SLEEP ? SleepMode::GENERAL : SleepMode::OFF;
+    this->apply_preset_(want);
+    this->set_preset_(preset);
+  } else if (call.has_custom_preset()) {
+    const StringRef preset = call.get_custom_preset();
+    Preset want;
+    if (preset == PRESET_QUIET) {
+      want.quiet = true;
+    } else if (preset == PRESET_SLEEP_YOUNG) {
+      want.sleep = SleepMode::YOUNG;
+    } else if (preset == PRESET_SLEEP_OLD) {
+      want.sleep = SleepMode::OLD;
+    } else if (preset == PRESET_SLEEP_KIDS) {
+      want.sleep = SleepMode::KIDS;
     }
+    this->apply_preset_(want);
+    this->set_custom_preset_(preset);
   }
-  
-  // Build chainable command for state machine to send
-  if (!changes.empty() && this->sender_) {
-    ESP_LOGD(TAG, "Changes detected: %zu properties - building chainable command", changes.size());
-    
-    // Apply individual property setters only for changed properties
-    for (const auto& property : changes) {
-      if (property == "temperature") {
-        this->sender_->set_temperature(this->target_temp_);
-        ESP_LOGD(TAG, "Set temperature bits: %d°C", this->target_temp_);
-      } else if (property == "mode") {
-        if (!this->run_status_) {
-          this->sender_->set_power(true);
-          this->run_status_ = true;
-          ESP_LOGD(TAG, "Power turned ON for mode change"); 
-        } else if (this->current_mode_ == climate::CLIMATE_MODE_OFF) {
-          this->sender_->set_power(false);
-          this->run_status_ = false;
-          ESP_LOGD(TAG, "Power turned OFF for mode change");
-        }
-        this->sender_->set_mode(this->current_mode_);
-        ESP_LOGD(TAG, "Set mode bits: %d", (int)this->current_mode_);
-      } else if (property == "fan_mode") {
-          if (this->current_custom_fan_mode_.empty()) {
-            this->sender_->set_fan_mode(this->current_fan_mode_);
-          } else {
-            this->sender_->set_fan_mode(this->current_custom_fan_mode_);
-          }
-        ESP_LOGD(TAG, "Set fan bits: %d, custom: %s", (int)this->current_fan_mode_, this->current_custom_fan_mode_.c_str());
-      } else if (property == "swing_mode") {
-        this->sender_->set_swing_mode(this->current_swing_mode_);
-        ESP_LOGD(TAG, "Set swing bits: %d", (int)this->current_swing_mode_);
-      } else if (property == "sleep") {
-        this->sender_->set_sleep_mode(this->sleep_enabled_ ? this->preferred_sleep_mode_ : SleepMode::SLEEP_OFF);
-        ESP_LOGD(TAG, "Set sleep bits");
-      } else if (property == "boost") {
-        this->sender_->set_boost_mode(this->boost_mode_);
-        ESP_LOGD(TAG, "Set boost bits");
-      } else if (property == "eco") {
-        this->sender_->set_eco_mode(this->eco_mode_);
-        ESP_LOGD(TAG, "Set eco bits");
-      }
-    }
-    
-    // Mark command as pending for state machine to pick up
-    this->command_state_.pending = true;
-    
-    this->update_climate_state();
-  } else if (!changes.empty() && !this->sender_) {
-    ESP_LOGE(TAG, "Command sender not initialized!");
-  }
-  
+
   this->publish_state();
 }
 
-void HisenseAC::set_power_state(bool power_on) {
-  if (this->run_status_ != power_on) {
-    this->run_status_ = power_on;
-    if (this->init_complete_) {
-      this->sender_->set_power(power_on);
-      ESP_LOGD(TAG, "Power state set to: %s", power_on ? "ON" : "OFF");
-      this->command_state_.pending = true;
-    }
+// Send only the special-mode bits that differ from what the AC currently has.
+void HisenseAC::apply_preset_(const Preset &want) {
+  const Preset have = preset_from_status_(this->status_);
+  if (want.eco != have.eco) {
+    this->sender_.set_eco(want.eco);
+    this->status_.eco = want.eco;
+  }
+  if (want.boost != have.boost) {
+    this->sender_.set_boost(want.boost);
+    this->status_.boost = want.boost;
+  }
+  if (want.quiet != have.quiet) {
+    this->sender_.set_quiet(want.quiet);
+    this->status_.quiet = want.quiet;
+  }
+  if (want.sleep != have.sleep) {
+    this->sender_.set_sleep(want.sleep);
+    this->status_.sleep = want.sleep;
   }
 }
 
-void HisenseAC::set_display_status(bool display_on) {
-  if (this->display_on_ != display_on) {
-    this->display_on_ = display_on;
-    if (this->init_complete_) {
-      this->sender_->set_display_status(display_on);
-      this->command_state_.pending = true;
-      ESP_LOGD(TAG, "Display command queued: %s", display_on ? "ON" : "OFF");
-    }
-  }
-}
-
-void HisenseAC::set_boost_mode(bool enabled) {
-  if (this->boost_mode_ != enabled) {
-    this->boost_mode_ = enabled;
-    if (this->init_complete_) {
-      this->sender_->set_boost_mode(enabled);
-      ESP_LOGD(TAG, "Boost mode set to: %s", enabled ? "ON" : "OFF");
-      this->command_state_.pending = true;
-    }
-  }
-}
-
-void HisenseAC::set_eco_mode(bool enabled) {
-  if (this->eco_mode_ != enabled) {
-    this->eco_mode_ = enabled;
-    if (this->init_complete_) {
-      this->sender_->set_eco_mode(enabled);
-      ESP_LOGD(TAG, "Eco mode set to: %s", enabled ? "ON" : "OFF");
-      this->command_state_.pending = true;
-    }
-  }
-}
-
-void HisenseAC::set_quiet_mode(bool enabled) {
-  if (this->quiet_mode_ != enabled) {
-    this->quiet_mode_ = enabled;
-    if (this->init_complete_) {
-      this->sender_->set_quiet_mode(enabled);
-      ESP_LOGD(TAG, "Quiet mode set to: %s", enabled ? "ON" : "OFF");
-      this->command_state_.pending = true;
-    }
-  }
-}
-
-void HisenseAC::set_sleep_enabled(bool enabled) {
-  if (this->sleep_enabled_ != enabled) {
-    this->sleep_enabled_ = enabled;
-    if (this->init_complete_) {
-      if (enabled) {
-        this->sender_->set_sleep_mode(this->preferred_sleep_mode_);
-      } else {
-        this->sender_->set_sleep_mode(SleepMode::SLEEP_OFF);
-      }
-      ESP_LOGD(TAG, "Sleep mode set to: %s", enabled ? "ON" : "OFF");
-      this->command_state_.pending = true;
-    }
-  }
-}
-
-void HisenseAC::set_preferred_sleep_mode(const std::string &status_str) {
-  SleepMode status = SleepModeUtils::from_string(status_str);
-  set_preferred_sleep_mode(status);
-}
-
-void HisenseAC::set_preferred_sleep_mode(SleepMode status) {
-  if (status == SleepMode::SLEEP_OFF) return;
-
-  if (this->preferred_sleep_mode_ != status) {
-    this->preferred_sleep_mode_ = status;
-    if (this->init_complete_) {
-      if (this->sleep_enabled_) {
-        this->sender_->set_sleep_mode(status);
-        this->command_state_.pending = true;
-      }
-      ESP_LOGD(TAG, "Preferred sleep mode set to: %s", SleepModeUtils::to_string(status));
-    }
-  }
-}
-
-void HisenseAC::update_climate_state() {
-  mode = current_mode_;
-  fan_mode = current_fan_mode_;
-  swing_mode = current_swing_mode_;
-  preset = current_preset_;
-  target_temperature = target_temp_;
-  current_temperature = current_temp_;
-
-  ESP_LOGD(TAG, "Climate state updated - Mode: %s, Temp: %d°C", 
-           this->get_mode_string(this->current_mode_).c_str(), this->target_temp_);
-}
-
-std::string HisenseAC::get_mode_string(climate::ClimateMode mode) {
-  switch (mode) {
-    case climate::CLIMATE_MODE_OFF: return "Off";
-    case climate::CLIMATE_MODE_AUTO: return "Auto";
-    case climate::CLIMATE_MODE_COOL: return "Cool";
-    case climate::CLIMATE_MODE_HEAT: return "Heat";
-    case climate::CLIMATE_MODE_DRY: return "Dry";
-    case climate::CLIMATE_MODE_FAN_ONLY: return "Fan Only";
-    default: return "Unknown";
-  }
+void HisenseAC::set_display(bool on) {
+  if (!this->linked_)
+    return;
+  this->sender_.set_display(on);
+  this->status_.display = on;
 }
 
 }  // namespace hisense_ac
