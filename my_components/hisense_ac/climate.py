@@ -6,6 +6,9 @@ from esphome.const import ENTITY_CATEGORY_CONFIG
 
 from . import HisenseAC, hisense_ac_ns
 
+DEPENDENCIES = ["uart"]
+AUTO_LOAD = ["switch"]
+
 CONF_FLOW_CONTROL_PIN = "flow_control_pin"
 CONF_DISPLAY = "display"
 CONF_BEEP = "beep"
